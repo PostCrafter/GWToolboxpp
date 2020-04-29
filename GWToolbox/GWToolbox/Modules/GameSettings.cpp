@@ -9,6 +9,7 @@
 #include <GWCA/GameEntities/Agent.h>
 #include <GWCA/GameEntities/Friendslist.h>
 #include <GWCA/Context/GameContext.h>
+#include <GWCA/Context/TradeContext.h>
 
 #include <GWCA/Managers/UIMgr.h>
 #include <GWCA/Managers/MapMgr.h>
@@ -20,6 +21,7 @@
 #include <GWCA/Managers/CameraMgr.h>
 #include <GWCA/Managers/MemoryMgr.h>
 #include <GWCA/Managers/RenderMgr.h>
+#include <GWCA/Managers/TradeMgr.h>
 #include <GWCA/Managers/FriendListMgr.h>
 #include <GWCA/Managers/GameThreadMgr.h>
 
@@ -28,8 +30,13 @@
 #include <GWToolbox.h>
 #include <Timer.h>
 #include <Color.h>
+#include <string.h>
+#include <inttypes.h>
 
 namespace {
+
+	GW::HookEntry debugUiMessageHook;
+
 	void SendChatCallback(GW::HookStatus *, GW::Chat::Channel chan, wchar_t msg[120]) {
 		if (!GameSettings::Instance().auto_url || !msg) return;
 		size_t len = wcslen(msg);
@@ -257,6 +264,20 @@ namespace {
 		if (remaining == total) {
 			move_to_first_empty_slot(item, backpack, bag2);
 		}
+	}
+
+	void move_item_to_trade(GW::Item* item) {
+		assert(item && item->quantity);
+
+		GW::TradeContext* ctx = GW::GameContext::instance()->trade;
+
+		if (!ctx) return;
+		if (!ctx->GetIsTradeInitiated()) return;
+		Log::Info("Item added: %d (x%d)", item->item_id, item->quantity);
+		GW::Trade::OfferItem(item->item_id, item->quantity);
+
+		GW::UI::SendUIMessage(0x10000000 | 0x102, &item->item_id, nullptr);
+		// GW::Trade::OpenTradeWindow(ctx->partner->ag)
 	}
 
 	// This whole section is commented because packets are not up to date after the update. 
@@ -508,6 +529,8 @@ void GameSettings::LoadSettings(CSimpleIni* ini) {
 	if (auto_url) GW::Chat::RegisterSendChatCallback(&SendChatCallback_Entry, &SendChatCallback);
 	if (move_item_on_ctrl_click) GW::Items::RegisterItemClickCallback(&ItemClickCallback_Entry, GameSettings::ItemClickCallback);
 
+	GW::UI::RegisterUIMessageCallback(&debugUiMessageHook, GameSettings::DebugUIMessage);
+
 	GW::Chat::RegisterWhisperCallback(&WhisperCallback_Entry, &WhisperCallback);
 
     tome_patch.TogglePatch(show_unlearned_skill);
@@ -518,6 +541,7 @@ void GameSettings::Terminate() {
 	ctrl_click_patch.Reset();
 	tome_patch.Reset();
 	gold_confirm_patch.Reset();
+	GW::UI::RemoveUIMessageCallback(&debugUiMessageHook);
 }
 
 void GameSettings::SaveSettings(CSimpleIni* ini) {
@@ -700,6 +724,62 @@ bool GameSettings::WndProc(UINT Message, WPARAM wParam, LPARAM lParam) {
 	return false;
 }
 
+void GameSettings::DebugUIMessage(GW::HookStatus* hook_status, uint32_t msgid, void* wParam, void* lParam)
+{
+	switch (msgid) {
+		// partner put item in trade
+		case 268435812:
+			Log::Info("Partner updated trade: %i", (int*) wParam);
+			break;
+		// opened
+		case 268435535: // std::string(null) on open?
+		case 268435808: // std::string("") on open?
+		case 268435872:
+		case 268435589:
+			return;
+		// ??
+			// break;
+
+		// put item in
+		case 268435714: // 0x102
+			Log::Info("Updated: %i(@%p), %p", *((uint32_t*)wParam), wParam, lParam);
+			// Log::Info("I updated trade: %i (x%i)", *((uint32_t*)wParam), *((uint32_t*)lParam));
+		case 268435814: // cancelled
+		// case 268435482:
+		// case 268435483:
+			break;
+		default:
+			return;
+	}
+
+	char str[11]; /* 11 bytes: 10 for the digits, 1 for the null character */
+	// snprintf(str, sizeof str, "%lu", (unsigned long)msgid); /* Method 1 */
+	snprintf(str, sizeof str, "%" PRIu32, msgid); /* Method 2 */
+	printf("[%" PRIu32 "]\n", msgid);
+
+	/*
+		Opened Trade
+		[268435872]
+		[268435535]
+		[268435808]
+		[268435589]
+
+		Partner Removed Item From Trade
+		[268435482]
+		[268435464]
+		[268435812]
+
+		Partner added Item To Trade
+		[268435812]
+
+		Added Item To Trade
+		[268435714]
+		[268435814]
+		[268435483]
+		[268435483]
+	*/
+}
+
 void GameSettings::ItemClickCallback(GW::HookStatus *, uint32_t type, uint32_t slot, GW::Bag *bag) {
 	if (!GameSettings::Instance().move_item_on_ctrl_click) return;
     if (!ImGui::IsKeyDown(VK_CONTROL)) return;
@@ -739,6 +819,12 @@ void GameSettings::ItemClickCallback(GW::HookStatus *, uint32_t type, uint32_t s
 	}
 
 	if (is_inventory_item) {
+		GW::TradeContext* trade = GW::GameContext::instance()->trade;
+		if (trade && trade->flags != GW::TradeContext::TRADE_CLOSED) {
+			move_item_to_trade(item);
+			return;
+		}
+
 		if (GW::Items::GetIsStorageOpen()) {
 			int current_storage = GW::Items::GetStoragePage();
 			move_item_to_storage_page(item, current_storage);

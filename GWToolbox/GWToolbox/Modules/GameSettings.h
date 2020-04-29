@@ -41,6 +41,7 @@ public:
 	bool WndProc(UINT Message, WPARAM wParam, LPARAM lParam);
 
 	void SetAfkMessage(std::wstring&& message);
+	static void DebugUIMessage(GW::HookStatus* hook_status, uint32_t msgid, void* wParam, void* lParam);
 	static void ItemClickCallback(GW::HookStatus *, uint32_t type, uint32_t slot, GW::Bag *bag);
 
 	bool tick_is_toggle = false;
